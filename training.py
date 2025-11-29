@@ -40,7 +40,7 @@ def train_model(
     
     Args:
         project_id: Your project identifier
-        training_data: List of {input, output, messages} examples
+        training_data: List of {input, output, messages, synthetic?} examples
         training_job_id: Unique job identifier
         callback_url: URL to call when training completes
     
@@ -61,6 +61,19 @@ def train_model(
     
     print(f"[Training] Starting training job: {training_job_id}")
     print(f"[Training] Training data examples: {len(training_data)}")
+    
+    # NEW: Log data composition (original vs synthetic)
+    synthetic_count = sum(1 for item in training_data if item.get('synthetic', False))
+    original_count = len(training_data) - synthetic_count
+    
+    print(f"[Training] {'='*60}")
+    print(f"[Training] 📊 Dataset Composition:")
+    print(f"[Training]   - Original examples: {original_count}")
+    print(f"[Training]   - Synthetic examples: {synthetic_count}")
+    print(f"[Training]   - Total: {len(training_data)}")
+    if original_count > 0:
+        print(f"[Training]   - Augmentation ratio: {synthetic_count/original_count:.1f}x")
+    print(f"[Training] {'='*60}")
     
     # 1. Load base model
     base_model_name = "Qwen/Qwen2.5-3B-Instruct"  # Your base model
@@ -89,6 +102,7 @@ def train_model(
     # 3. Prepare training data
     # First, let's check the structure of training_data
     print(f"[Training] First training example structure: {training_data[0] if training_data else 'No data'}")
+    
     def tokenize_function(examples):
         """Tokenize the formatted examples
         When batched=True, examples is a dict-like object (LazyBatch) with keys as column names
@@ -134,11 +148,17 @@ def train_model(
             add_generation_prompt=False
         )
         return prompt
-        
+    
+    # NEW: Clean training data - remove metadata fields before creating dataset
+    clean_training_data = [
+        {k: v for k, v in item.items() if k not in ['synthetic', 'originalExampleIndex', 'generatedAt']}
+        for item in training_data
+    ]
+    
     # Convert to dataset format
     # Ensure training_data has the right structure
-    print(f"[Training] Training data sample: {training_data[0] if training_data else 'No data'}")
-    dataset = Dataset.from_list(training_data)
+    print(f"[Training] Training data sample (cleaned): {clean_training_data[0] if clean_training_data else 'No data'}")
+    dataset = Dataset.from_list(clean_training_data)
     print(f"[Training] Dataset columns: {dataset.column_names}")
     print(f"[Training] Dataset size: {len(dataset)}")
     
@@ -201,6 +221,8 @@ def train_model(
     print(f"[Training]   - Final loss: {final_loss:.4f}")
     print(f"[Training]   - Samples per second: {metrics.get('train_samples_per_second', 0):.2f}")
     print(f"[Training]   - Total epochs: {metrics.get('epoch', 0)}")
+    print(f"[Training]   - Original examples used: {original_count}")
+    print(f"[Training]   - Synthetic examples used: {synthetic_count}")
     
     # Quality assessment
     if final_loss < 1.0:
@@ -269,6 +291,12 @@ def train_model(
             "status": "completed",
             "trainedModelId": trained_model_id,
             "modelEndpoint": model_endpoint,
+            "metrics": {
+                "finalLoss": final_loss,
+                "originalExamples": original_count,
+                "syntheticExamples": synthetic_count,
+                "totalExamples": len(training_data)
+            }
         }
         
         response = requests.post(
@@ -286,10 +314,6 @@ def train_model(
     except Exception as e:
         print(f"[Training] Error sending callback: {e}")
         print(f"[Training] Training completed successfully. Use manual update endpoint:")
-        print(f"[Training] POST /api/training/manual-update with:")
-        print(f"[Training]   projectId: {project_id}")
-        print(f"[Training]   trainedModelId: {trained_model_id}")
-        print(f"[Training]   modelEndpoint: {model_endpoint}")
         print(f"[Training] POST /api/training/manual-update with:")
         print(f"[Training]   projectId: {project_id}")
         print(f"[Training]   trainedModelId: {trained_model_id}")
@@ -346,4 +370,3 @@ def train_endpoint(item: dict):
         "jobId": training_job_id,
         "status": "started"
     }
-
