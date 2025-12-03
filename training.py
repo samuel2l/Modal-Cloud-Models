@@ -406,7 +406,8 @@ model_volume = modal.Volume.from_name("trained-models")
     timeout=5400,  # 1.5 hours timeout for early stopping
     gpu="L4",  # Use GPU for training (standardized)
     volumes={"/models": model_volume},  # Mount volume for persistent storage
-    secrets=[modal.Secret.from_name("wandb-secret")],  # W&B API key
+    # W&B secret is optional - only include if you want experiment tracking
+    # secrets=[modal.Secret.from_name("wandb-secret")],  # W&B API key
 )
 def train_model(
     project_id: str,
@@ -434,22 +435,31 @@ def train_model(
     )
     from datasets import Dataset
     import torch
-    import wandb
     
-    # Initialize Weights & Biases
-    wandb.init(
-        project="vibetune",
-        name=training_job_id,
-        config={
-            "model": "Qwen3-1.7B",
-            "lora_r": 8,
-            "lora_alpha": 16,
-            "learning_rate": 1.5e-4,
-            "batch_size": 4,
-            "max_seq_length": 2048,
-        },
-        tags=["fine-tuning", "qwen", "lora"],
-    )
+    # Initialize Weights & Biases (optional - only if API key is available)
+    use_wandb = False
+    try:
+        import wandb
+        if os.environ.get("WANDB_API_KEY"):
+            wandb.init(
+                project="vibetune",
+                name=training_job_id,
+                config={
+                    "model": "Qwen3-1.7B",
+                    "lora_r": 8,
+                    "lora_alpha": 16,
+                    "learning_rate": 1.5e-4,
+                    "batch_size": 4,
+                    "max_seq_length": 2048,
+                },
+                tags=["fine-tuning", "qwen", "lora"],
+            )
+            use_wandb = True
+            print(f"[Training] ✅ W&B tracking enabled")
+        else:
+            print(f"[Training] ⚠️  W&B API key not found - skipping experiment tracking")
+    except Exception as e:
+        print(f"[Training] ⚠️  W&B initialization failed: {e} - continuing without tracking")
     
     print(f"[Training] Starting training job: {training_job_id}")
     print(f"[Training] Training data examples: {len(training_data)}")
@@ -581,7 +591,7 @@ def train_model(
         weight_decay=0.01,
         remove_unused_columns=False,
         seed=42,
-        report_to="wandb",  # Report metrics to W&B
+        report_to="wandb" if use_wandb else "none",  # Report metrics to W&B if enabled
         dataloader_num_workers=2,
     )
     
@@ -780,14 +790,15 @@ def train_model(
     except Exception as e:
         print(f"[Training] ⚠️  Cleanup failed: {e}")
     
-    # Finish W&B run
-    wandb.log({
-        "final_loss": final_loss,
-        "original_examples": original_count,
-        "synthetic_examples": synthetic_count,
-        "total_examples": len(training_data),
-    })
-    wandb.finish()
+    # Finish W&B run (if enabled)
+    if use_wandb:
+        wandb.log({
+            "final_loss": final_loss,
+            "original_examples": original_count,
+            "synthetic_examples": synthetic_count,
+            "total_examples": len(training_data),
+        })
+        wandb.finish()
     
     print(f"[Training] 🎉 Training pipeline completed successfully!")
     return {
